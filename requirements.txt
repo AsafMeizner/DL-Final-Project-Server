@@ -3,7 +3,7 @@ uvicorn
 onnxruntime
 numpy
 pydantic
-scipy
+librosa
 soundfile
-python-multipart
 Pillow
+python-multipart
