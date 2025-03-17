@@ -1,7 +1,7 @@
-fastapi==0.95.2
-uvicorn==0.22.0
-onnxruntime==1.20.1
-numpy==1.24.0
+fastapi
+uvicorn
+onnxruntime
+numpy
 pydantic
 scipy
 soundfile
