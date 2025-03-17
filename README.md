@@ -1,0 +1,1 @@
+This API service is for the [Mancala Project for 12th Grade](https://github.com/Rdhirschel/final-project-mancala)
