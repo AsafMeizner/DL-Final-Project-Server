@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from typing import List
 from PIL import Image
+import uvicorn
 
 from app.audio_processing import compute_mel_spectrogram, SAMPLE_RATE, N_MELS, HOP_LENGTH, FMIN, FMAX, N_FFT
 from app.onnx_models import (
@@ -59,7 +60,6 @@ def read_root():
 
 @app.get("/api-docs", response_class=HTMLResponse)
 def api_docs():
-    # Render a simple HTML page that shows the OpenAPI JSON
     openapi_json = app.openapi()
     html_content = f"""
     <html>
@@ -82,7 +82,9 @@ def process_sentiment(audio: np.ndarray, sr: int) -> List[dict]:
     segments = []
     total_duration = len(audio) / sr
     num_segments = int(total_duration // SEGMENT_DURATION)
-    num_segments = max(num_segments, 1)
+    if num_segments < 1:
+        num_segments = 1
+
     for i in range(num_segments):
         start_sec = i * SEGMENT_DURATION
         end_sec = start_sec + SEGMENT_DURATION
@@ -90,20 +92,18 @@ def process_sentiment(audio: np.ndarray, sr: int) -> List[dict]:
         end_sample = int(end_sec * sr)
         audio_segment = audio[start_sample:end_sample]
         S_db = compute_mel_spectrogram(audio_segment, sr)
-        # Ensure fixed time dimension
         if S_db.shape[1] < TARGET_FRAMES:
             pad_width = TARGET_FRAMES - S_db.shape[1]
             S_db_fixed = np.pad(S_db, ((0, 0), (0, pad_width)), mode='constant')
         else:
             S_db_fixed = S_db[:, :TARGET_FRAMES]
-        S_db_fixed = S_db_fixed.T  # shape: (TARGET_FRAMES, N_MELS)
+        S_db_fixed = S_db_fixed.T
         input_tensor = np.expand_dims(np.expand_dims(S_db_fixed, -1), 0).astype(np.float32)
         if sentiment_session is None:
             raise HTTPException(status_code=500, detail="Sentiment model not loaded")
         pred = sentiment_session.run([sentiment_output_name], {sentiment_input_name: input_tensor})
-        # Assume the model outputs an array of shape (1, 2): [valence, arousal]
         valence, arousal = float(pred[0][0][0]), float(pred[0][0][1])
-        dominance = 0.5  # Dummy value; adjust as needed.
+        dominance = 0.5
         segments.append({
             "timeSec": start_sec,
             "valence": valence,
@@ -123,7 +123,6 @@ def process_genre(audio: np.ndarray, sr: int) -> str:
     end_sample = int(end_sec * sr)
     audio_chunk = audio[start_sample:end_sample]
     S_db = compute_mel_spectrogram(audio_chunk, sr)
-    # Normalize and convert the spectrogram to an image for resizing
     S_norm = (S_db - np.min(S_db)) / (np.max(S_db) - np.min(S_db) + 1e-10) * 255
     S_norm = S_norm.astype(np.uint8)
     img = Image.fromarray(S_norm)
@@ -134,19 +133,28 @@ def process_genre(audio: np.ndarray, sr: int) -> str:
         raise HTTPException(status_code=500, detail="Genre model not loaded")
     pred = genre_session.run([genre_output_name], {genre_input_name: input_tensor})
     pred_index = int(np.argmax(pred[0], axis=1)[0])
-    return GENRE_CLASSES[pred_index]
+    genre_label = GENRE_CLASSES[pred_index]
+    return genre_label
 
 @app.post("/analyze", response_model=AnalysisResult)
 async def analyze_audio_endpoint(audio: UploadFile = File(...)):
-    if audio.content_type.split("/")[0] != "audio":
-        raise HTTPException(status_code=400, detail="Invalid file type. Please upload an audio file.")
     try:
+        if audio.content_type.split("/")[0] != "audio":
+            raise HTTPException(status_code=400, detail="Invalid file type. Please upload an audio file.")
         contents = await audio.read()
-        # Use librosa to load audio from bytes; force mono and sample rate
         audio_np, sr = librosa.load(io.BytesIO(contents), sr=SAMPLE_RATE, mono=True)
     except Exception as e:
+        print("Error loading audio:", e)
         raise HTTPException(status_code=500, detail=f"Error processing audio: {e}")
 
-    sentiment_segments = process_sentiment(audio_np, sr)
-    genre_prediction = process_genre(audio_np, sr)
+    try:
+        sentiment_segments = process_sentiment(audio_np, sr)
+        genre_prediction = process_genre(audio_np, sr)
+    except Exception as e:
+        print("Error during analysis:", e)
+        raise HTTPException(status_code=500, detail=f"Error during analysis: {e}")
+
     return AnalysisResult(segments=sentiment_segments, genre=genre_prediction)
+
+if __name__ == "__main__":
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
